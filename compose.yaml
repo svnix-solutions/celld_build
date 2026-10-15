@@ -23,7 +23,9 @@ services:
     # lock in the S3 gateway, which is what celld's leases need. celld has not
     # qualified SeaweedFS: every node re-runs its storage test at boot and
     # refuses to serve if the store fails it.
-    image: chrislusf/seaweedfs:${SEAWEEDFS_VERSION:-4.48}
+    # Primary registry: release CI builds here, then copies the same digest to
+    # Docker Hub (chrislusf/seaweedfs), which lags. Pin releases, never `dev`.
+    image: ghcr.io/chrislusf/seaweedfs:${SEAWEEDFS_VERSION:-4.48}
     restart: unless-stopped
     command:
       - server

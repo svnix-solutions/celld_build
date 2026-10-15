@@ -18,7 +18,7 @@ Internet ─► NPM (TLS) ──PROXY_NETWORK──► celld :8080        public
 
 ## Before you start: the storage caveat
 
-The bucket is SeaweedFS 4.48 (`chrislusf/seaweedfs`), run all-in-one: master, volume, filer and
+The bucket is SeaweedFS 4.48 (`ghcr.io/chrislusf/seaweedfs`, built by `seaweedfs/seaweedfs` release CI), run all-in-one: master, volume, filer and
 S3 gateway in one container on one disk. Its S3 gateway checks `If-None-Match` / `If-Match` and
 applies the PUT under a per-object write lock, which is the compare-and-swap celld's leases need.
 
