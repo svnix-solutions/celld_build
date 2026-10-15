@@ -1,0 +1,65 @@
+# Komodo resource sync for the celld fleet.
+# Point a Resource Sync at this repo with resource_path = ["komodo/resources.toml"],
+# or paste the blocks into the UI. Replace the REPLACE_ME values (server, git account) first.
+#
+# Secrets are NOT in git. Create these Komodo variables (Settings -> Variables,
+# mark "secret"):
+#   CELLD_MINIO_ROOT_USER, CELLD_MINIO_ROOT_PASSWORD
+#   CELLD_B2_KEY_ID, CELLD_B2_APPLICATION_KEY   (only if backup is enabled)
+
+[[stack]]
+name = "celld-fleet"
+description = "celld node + local MinIO fleet bucket, behind Nginx Proxy Manager"
+tags = ["celld"]
+[stack.config]
+server = "REPLACE_ME_server"                 # Komodo server name of the Docker host
+git_provider = "github.com"
+git_account = "REPLACE_ME_git_account"
+repo = "svnix-solutions/celld_build"
+branch = "main"
+file_paths = ["compose.yaml"]
+run_build = true                             # builds MinIO from source + the tools image
+auto_pull = true
+webhook_enabled = true                       # push to main -> DeployStackIfChanged
+environment = """
+PROXY_NETWORK=npm_default
+CELLD_VERSION=0.6.2
+CELLD_BUCKET_NAME=celld
+MINIO_ROOT_USER=[[CELLD_MINIO_ROOT_USER]]
+MINIO_ROOT_PASSWORD=[[CELLD_MINIO_ROOT_PASSWORD]]
+# COMPOSE_PROFILES=backup
+# B2_BUCKET=svnix-celld-backup
+# B2_KEY_ID=[[CELLD_B2_KEY_ID]]
+# B2_APPLICATION_KEY=[[CELLD_B2_APPLICATION_KEY]]
+"""
+
+# One stack per celld app. Copy this block per app (or per app repo).
+# Every push to main bundles, publishes and adopts the app; the node never restarts.
+[[stack]]
+name = "celld-app-hello"
+description = "Deploy apps/hello to the celld fleet on push to main"
+tags = ["celld"]
+after = ["celld-fleet"]
+[stack.config]
+server = "REPLACE_ME_server"
+git_provider = "github.com"
+git_account = "REPLACE_ME_git_account"
+repo = "svnix-solutions/celld_build"
+branch = "main"
+file_paths = ["app.compose.yaml"]
+run_build = true
+auto_pull = false
+webhook_enabled = true
+webhook_force_deploy = true                  # app code changes don't touch the compose file
+extra_args = ["--force-recreate"]            # rerun the one-shot even if the image is unchanged
+environment = """
+APP_NAME=hello
+APP_DIR=apps/hello
+CELLD_VERSION=0.6.2
+CELLD_BUCKET_NAME=celld
+MINIO_ROOT_USER=[[CELLD_MINIO_ROOT_USER]]
+MINIO_ROOT_PASSWORD=[[CELLD_MINIO_ROOT_PASSWORD]]
+"""
+# Fail the Komodo update unless the deploy container exits 0.
+post_deploy.shell_mode = true
+post_deploy.command = 'code="$(docker wait celld-deploy-hello)"; docker logs celld-deploy-hello; test "$code" = 0'

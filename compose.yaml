@@ -1,0 +1,154 @@
+# celld fleet: local MinIO bucket + one celld node, fronted by Nginx Proxy Manager.
+#
+#   NPM ──(PROXY_NETWORK)──► celld :8080  public Worker listener
+#                            celld :8081  peer/operator API, celld_internal only
+#                            minio :9000  fleet bucket, celld_internal only
+#
+# celld_internal is `internal: true`: nothing on it can reach the internet, and
+# nothing outside it can reach the operator API or the bucket.
+
+name: celld-fleet
+
+x-bucket-env: &bucket-env
+  CELLD_BUCKET: s3://${CELLD_BUCKET_NAME:-celld}
+  S3_ENDPOINT: http://minio:9000
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+
+services:
+  minio:
+    build:
+      context: ./minio
+    image: local/minio:RELEASE.2025-10-15T17-29-55Z
+    pull_policy: build
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      MINIO_UPDATE: "off"
+    volumes:
+      - ${MINIO_DATA:-minio-data}:/data
+    ports:
+      # Console on the host's loopback only. Reach it with an SSH tunnel:
+      #   ssh -L 9001:127.0.0.1:9001 host
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  tools:
+    # Builds the shared tools image (celld CLI + esbuild) and creates the bucket.
+    # App stacks build FROM this image, so it must exist on the host first.
+    build:
+      context: ./tools
+      args:
+        CELLD_VERSION: ${CELLD_VERSION:-0.6.2}
+    image: local/celld-tools:${CELLD_VERSION:-0.6.2}
+    pull_policy: build
+    command: ["node", "/opt/celld-tools/bin/ensure-bucket.mjs"]
+    environment: *bucket-env
+    restart: "no"
+    networks: [internal]
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  celld:
+    image: ghcr.io/denoland/celld:${CELLD_VERSION:-0.6.2}
+    restart: unless-stopped
+    # celld's supervisor contract: restart forever, and wait at least one lease
+    # lifetime (CELLD_TTL_MS, 10 s) between attempts. Docker's restart backoff
+    # starts at 100 ms, so the delay lives in the entrypoint.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'sleep "$${CELLD_RESTART_DELAY_S:-12}" && exec /usr/local/bin/celld'
+    environment:
+      <<: *bucket-env
+      CELLD_ADDR: 0.0.0.0:8080
+      CELLD_INTERNAL_ADDR: ${CELLD_INTERNAL_IP:-172.30.70.10}:8081
+      CELLD_ADVERTISE: ${CELLD_INTERNAL_IP:-172.30.70.10}:8081
+      CELLD_WATCH: /var/lib/celld/state
+      CELLD_DEPLOY_POLL_S: ${CELLD_DEPLOY_POLL_S:-15}
+      CELLD_RESTART_DELAY_S: ${CELLD_RESTART_DELAY_S:-12}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - celld-state:/var/lib/celld
+    networks:
+      internal:
+        ipv4_address: ${CELLD_INTERNAL_IP:-172.30.70.10}
+      edge:
+        aliases: [celld-fleet]
+    # Graceful SIGTERM drain is bounded by CELLD_SHUTDOWN_TOTAL_MS (40 s).
+    stop_grace_period: 50s
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /.well-known/celld/health HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && head -n1 <&3 | grep -q " 200"'
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      minio:
+        condition: service_healthy
+      tools:
+        condition: service_completed_successfully
+
+  backup:
+    # Optional off-host copy to Backblaze B2. Enable with COMPOSE_PROFILES=backup.
+    # Keep versioning on in the B2 bucket (B2's default "keep all versions") so
+    # `sync` deletions stay recoverable.
+    image: rclone/rclone:${RCLONE_VERSION:-1.71.1}
+    profiles: [backup]
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        while :; do
+          rclone sync "fleet:$${BUCKET}" "b2:$${B2_BUCKET}/$${B2_PREFIX}" --fast-list --transfers 8 --checkers 16 --log-level INFO \
+            && echo "backup ok $$(date -u +%FT%TZ)" || echo "backup FAILED $$(date -u +%FT%TZ)" >&2
+          sleep "$${BACKUP_INTERVAL_S}"
+        done
+    environment:
+      BUCKET: ${CELLD_BUCKET_NAME:-celld}
+      B2_BUCKET: ${B2_BUCKET:-}
+      B2_PREFIX: ${B2_PREFIX:-celld-fleet}
+      BACKUP_INTERVAL_S: ${BACKUP_INTERVAL_S:-21600}
+      RCLONE_CONFIG_FLEET_TYPE: s3
+      RCLONE_CONFIG_FLEET_PROVIDER: Minio
+      RCLONE_CONFIG_FLEET_ENDPOINT: http://minio:9000
+      RCLONE_CONFIG_FLEET_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      RCLONE_CONFIG_FLEET_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      RCLONE_CONFIG_B2_TYPE: b2
+      RCLONE_CONFIG_B2_ACCOUNT: ${B2_KEY_ID:-}
+      RCLONE_CONFIG_B2_KEY: ${B2_APPLICATION_KEY:-}
+    networks: [internal, egress]
+    depends_on:
+      minio:
+        condition: service_healthy
+
+networks:
+  internal:
+    name: celld_internal
+    internal: true
+    ipam:
+      config:
+        - subnet: ${CELLD_INTERNAL_SUBNET:-172.30.70.0/24}
+  edge:
+    name: ${PROXY_NETWORK:?set PROXY_NETWORK to the Docker network Nginx Proxy Manager is on}
+    external: true
+  egress:
+    name: celld_egress
+
+volumes:
+  minio-data:
+  celld-state:

@@ -1,0 +1,5 @@
+.env
+.dev.vars
+.env.local
+.celld/
+node_modules/
