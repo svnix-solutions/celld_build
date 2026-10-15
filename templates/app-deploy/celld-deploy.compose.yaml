@@ -3,9 +3,10 @@
 # now. The container exits; the node keeps serving the previous deployment if
 # the new one fails to build.
 #
-# Needs the celld-fleet stack running (network celld_internal, image
-# local/celld-tools). One Komodo stack per app; copy this file and app.Dockerfile
-# into each app repo, or point APP_DIR at a folder in this repo.
+# Template for app repos: copy celld-deploy.compose.yaml,
+# celld-deploy.Dockerfile and celld-deploy.Dockerfile.dockerignore to the app
+# repo root. Needs the celld-fleet stack running on the same host (network
+# celld_internal, image local/celld-tools).
 
 name: celld-app-${APP_NAME:?set APP_NAME}
 
@@ -13,9 +14,9 @@ services:
   deploy:
     build:
       context: .
-      dockerfile: app.Dockerfile
+      dockerfile: celld-deploy.Dockerfile
       args:
-        APP_DIR: ${APP_DIR:?set APP_DIR, e.g. apps/hello}
+        APP_DIR: ${APP_DIR:-.}   # folder holding wrangler.jsonc, relative to the repo root
         CELLD_VERSION: ${CELLD_VERSION:-0.6.2}
     image: local/celld-app-${APP_NAME}:latest
     pull_policy: build
