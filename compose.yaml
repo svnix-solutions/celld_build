@@ -1,8 +1,8 @@
-# celld fleet: local MinIO bucket + one celld node, fronted by Nginx Proxy Manager.
+# celld fleet: local SeaweedFS bucket + one celld node, fronted by Nginx Proxy Manager.
 #
 #   NPM ──(PROXY_NETWORK)──► celld :8080  public Worker listener
 #                            celld :8081  peer/operator API, celld_internal only
-#                            minio :9000  fleet bucket, celld_internal only
+#                        seaweedfs :8333  fleet bucket (S3), celld_internal only
 #
 # celld_internal is `internal: true`: nothing on it can reach the internet, and
 # nothing outside it can reach the operator API or the bucket.
@@ -11,35 +11,41 @@ name: celld-fleet
 
 x-bucket-env: &bucket-env
   CELLD_BUCKET: s3://${CELLD_BUCKET_NAME:-celld}
-  S3_ENDPOINT: http://minio:9000
+  S3_ENDPOINT: http://seaweedfs:8333
   AWS_REGION: us-east-1
-  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
-  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+  AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY}
+  AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY}
 
 services:
-  minio:
-    build:
-      context: ./minio
-    image: local/minio:RELEASE.2025-10-15T17-29-55Z
-    pull_policy: build
+  seaweedfs:
+    # All-in-one SeaweedFS: master + volume + filer (leveldb2) + S3 gateway.
+    # Conditional PUTs (If-None-Match / If-Match) run under a per-object write
+    # lock in the S3 gateway, which is what celld's leases need. celld has not
+    # qualified SeaweedFS: every node re-runs its storage test at boot and
+    # refuses to serve if the store fails it.
+    image: chrislusf/seaweedfs:${SEAWEEDFS_VERSION:-4.48}
     restart: unless-stopped
+    command:
+      - server
+      - -ip=127.0.0.1
+      - -ip.bind=0.0.0.0
+      - -filer
+      - -s3
+      - -s3.port=8333
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
-      MINIO_UPDATE: "off"
+      # Static admin identity. Setting it turns S3 auth on, so anonymous
+      # requests are denied. Scoped users/policies: `weed shell` (see README).
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY}
     volumes:
-      - ${MINIO_DATA:-minio-data}:/data
-    ports:
-      # Console on the host's loopback only. Reach it with an SSH tunnel:
-      #   ssh -L 9001:127.0.0.1:9001 host
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+      - ${SEAWEEDFS_DATA:-seaweedfs-data}:/data
     networks: [internal]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8333/healthz"]
       interval: 10s
       timeout: 5s
       retries: 6
-      start_period: 20s
+      start_period: 30s
 
   tools:
     # Builds the shared tools image (celld CLI + esbuild) and creates the bucket.
@@ -54,7 +60,7 @@ services:
     restart: "no"
     networks: [internal]
     depends_on:
-      minio:
+      seaweedfs:
         condition: service_healthy
 
   celld:
@@ -96,7 +102,7 @@ services:
       retries: 3
       start_period: 60s
     depends_on:
-      minio:
+      seaweedfs:
         condition: service_healthy
       tools:
         condition: service_completed_successfully
@@ -123,16 +129,16 @@ services:
       B2_PREFIX: ${B2_PREFIX:-celld-fleet}
       BACKUP_INTERVAL_S: ${BACKUP_INTERVAL_S:-21600}
       RCLONE_CONFIG_FLEET_TYPE: s3
-      RCLONE_CONFIG_FLEET_PROVIDER: Minio
-      RCLONE_CONFIG_FLEET_ENDPOINT: http://minio:9000
-      RCLONE_CONFIG_FLEET_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
-      RCLONE_CONFIG_FLEET_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      RCLONE_CONFIG_FLEET_PROVIDER: SeaweedFS
+      RCLONE_CONFIG_FLEET_ENDPOINT: http://seaweedfs:8333
+      RCLONE_CONFIG_FLEET_ACCESS_KEY_ID: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY}
+      RCLONE_CONFIG_FLEET_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY}
       RCLONE_CONFIG_B2_TYPE: b2
       RCLONE_CONFIG_B2_ACCOUNT: ${B2_KEY_ID:-}
       RCLONE_CONFIG_B2_KEY: ${B2_APPLICATION_KEY:-}
     networks: [internal, egress]
     depends_on:
-      minio:
+      seaweedfs:
         condition: service_healthy
 
 networks:
@@ -149,5 +155,5 @@ networks:
     name: celld_egress
 
 volumes:
-  minio-data:
+  seaweedfs-data:
   celld-state:
