@@ -43,7 +43,6 @@ services:
 
   tools:
     # Builds the shared tools image (celld CLI + esbuild) and creates the bucket.
-    # App stacks build FROM this image, so it must exist on the host first.
     build:
       context: ./tools
       args:

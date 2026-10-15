@@ -1,22 +1,21 @@
 # celld on Komodo, behind Nginx Proxy Manager
 
 One Docker host running a single-node [celld](https://github.com/denoland/celld) fleet (v0.6.2)
-on a local MinIO bucket. Apps live in their own repos and deploy on every push to their `main`.
+on a local MinIO bucket.
 
 ```
 Internet ─► NPM (TLS) ──PROXY_NETWORK──► celld :8080        public Workers / Durable Objects
                                           celld :8081  ┐
                          celld_internal ─ minio :9000  ├─ internal: true, no internet, not reachable from NPM
-                         (172.30.70.0/24)  deploy jobs ┘
+                         (172.30.70.0/24)  tools       ┘
 ```
 
 | File | What it is |
 |---|---|
 | `compose.yaml` | Fleet stack: `minio` (built from source), `tools` (builds the CLI image, creates the bucket), `celld`, optional `backup` → B2 |
-| `templates/app-deploy/` | Files to copy into each app repo: one-shot `celld deploy` → `POST /reload`, exits |
-| `komodo/resources.toml` | Fleet stack as a Komodo resource, plus a commented app-stack template |
+| `komodo/resources.toml` | Fleet stack as a Komodo resource |
 | `minio/Dockerfile` | MinIO `RELEASE.2025-10-15T17-29-55Z` built from its git tag, commit pinned |
-| `tools/` | `celld` CLI + esbuild + `ensure-bucket.mjs` + `deploy.sh` |
+| `tools/` | `celld` CLI + esbuild + `ensure-bucket.mjs` |
 
 ## Before you start: the storage caveat
 
@@ -52,8 +51,6 @@ community release from source. The first build takes a few minutes.
    healthy about 60 s after that.
 6. **Webhook**: copy the stack's webhook URL into this GitHub repo (Settings → Webhooks,
    content type `application/json`, push events).
-7. **Add apps** from their own repos ([below](#apps-in-other-repos)). Until an app is deployed
-   the node serves no Worker, so requests through NPM fail; that is expected.
 
 ## Nginx Proxy Manager
 
@@ -92,23 +89,6 @@ the address private:
       - "10.8.0.5:8080:8080"
 ```
 
-## Apps in other repos
-
-Each app repo (a Wrangler project with `wrangler.jsonc`) gets its own Komodo stack:
-
-1. Copy everything in `templates/app-deploy/` to the app repo root:
-   `celld-deploy.compose.yaml`, `celld-deploy.Dockerfile`,
-   `celld-deploy.Dockerfile.dockerignore`.
-2. In Komodo, add a stack from the commented template at the bottom of `komodo/resources.toml`.
-   Set `APP_NAME`, the repo, `APP_DIR` (`.` unless the project sits in a subfolder) and the
-   container name in `post_deploy`.
-3. Add that stack's webhook to the app repo. Each push to `main` runs `celld deploy --dry-run`
-   in the image build, publishes, then reloads the node. The log ends with `deploy: adopted`.
-
-A fleet runs one application, so the last deploy wins. Either put multiple products behind one
-Worker (route by `Host` and use service bindings), or give each product its own fleet with its
-own bucket prefix (`CELLD_BUCKET_NAME=celld/rpo`) and node.
-
 ## Day-2
 
 ```sh
@@ -122,10 +102,7 @@ docker compose run --rm --no-deps tools curl -s http://172.30.70.10:8081/state
 docker compose run --rm --no-deps tools curl -s -X POST http://172.30.70.10:8081/reload
 ```
 
-- **Bad deploys** fail in the image build (`celld deploy --dry-run`) or at `/reload`. Either way
-  the previous deployment keeps serving, and Komodo marks the update failed.
-- **Rollback**: revert the commit and push; the app stack redeploys the old code.
-- **celld upgrade**: bump `CELLD_VERSION` here first, then in each app stack. The node drains on SIGTERM
+- **celld upgrade**: bump `CELLD_VERSION`. The node drains on SIGTERM
   for up to 40 s (`stop_grace_period: 50s`). Read celld's release notes first: it's alpha, and
   security fixes go only to the latest release.
 - **Backups**: set `COMPOSE_PROFILES=backup` plus the `B2_*` values, and keep versioning on for
@@ -139,6 +116,4 @@ docker compose run --rm --no-deps tools curl -s -X POST http://172.30.70.10:8081
 
 - MinIO uses root credentials because it serves only this fleet. celld treats bucket access as
   fleet-admin access either way.
-- `celld-deploy.Dockerfile` builds `FROM local/celld-tools`, which works with Docker's default builder.
-  With a `docker-container` buildx builder, push the tools image to a registry instead.
 - `RUST_LOG=debug` on the `celld` service for verbose logs.

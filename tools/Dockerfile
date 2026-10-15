@@ -1,5 +1,5 @@
-# celld CLI + esbuild + helpers. Used for bucket init, `celld deploy`,
-# `celld diagnose` and the other operator subcommands.
+# celld CLI + esbuild + helpers. Used for bucket init, `celld diagnose`
+# and the other operator subcommands.
 ARG CELLD_VERSION=0.6.2
 FROM ghcr.io/denoland/celld:${CELLD_VERSION} AS celld
 
@@ -12,7 +12,6 @@ WORKDIR /opt/celld-tools
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 COPY bin/ ./bin/
-RUN chmod +x bin/*.sh
 ENV PATH=/opt/celld-tools/node_modules/.bin:/opt/celld-tools/bin:$PATH
 RUN celld --version && esbuild --version
 ENTRYPOINT []

@@ -32,36 +32,3 @@ MINIO_ROOT_PASSWORD=[[CELLD_MINIO_ROOT_PASSWORD]]
 # B2_KEY_ID=[[CELLD_B2_KEY_ID]]
 # B2_APPLICATION_KEY=[[CELLD_B2_APPLICATION_KEY]]
 """
-
-# App stacks live with each app repo, not here. Per app, add a stack like the
-# one below (in this sync or the app repo's own), with the deploy templates from
-# templates/app-deploy/ at the app repo root. Every push to main bundles,
-# publishes and adopts the app; the node never restarts.
-#
-# [[stack]]
-# name = "celld-app-APPNAME"
-# tags = ["celld"]
-# after = ["celld-fleet"]
-# [stack.config]
-# server = "REPLACE_ME_server"
-# git_provider = "github.com"
-# git_account = "REPLACE_ME_git_account"
-# repo = "svnix-solutions/APP_REPO"
-# branch = "main"
-# file_paths = ["celld-deploy.compose.yaml"]
-# run_build = true
-# auto_pull = false
-# webhook_enabled = true
-# webhook_force_deploy = true               # app code changes don't touch the compose file
-# extra_args = ["--force-recreate"]         # rerun the one-shot even if the image is unchanged
-# environment = """
-# APP_NAME=APPNAME
-# APP_DIR=.
-# CELLD_VERSION=0.6.2
-# CELLD_BUCKET_NAME=celld
-# MINIO_ROOT_USER=[[CELLD_MINIO_ROOT_USER]]
-# MINIO_ROOT_PASSWORD=[[CELLD_MINIO_ROOT_PASSWORD]]
-# """
-# # Fail the Komodo update unless the deploy container exits 0.
-# post_deploy.shell_mode = true
-# post_deploy.command = 'code="$(docker wait celld-deploy-APPNAME)"; docker logs celld-deploy-APPNAME; test "$code" = 0'
